@@ -25,7 +25,6 @@ export class ChatService {
 
       this.openai = new OpenAI({ apiKey });
       
-      // Initialize Directus client using existing Schema
       this.directus = createDirectus<DirectusSchema>(directusUrl)
         .with(authentication())
         .with(staticToken(directusToken))
@@ -44,12 +43,39 @@ export class ChatService {
     try {
       console.log(`Querying collection: ${collection}`, query);
       
-      const response = await readItems(collection as never, {
-        ...query,
-        limit: 10
-      });
+      let items;
       
-      const items = await this.directus.request(response);
+      // If we're querying applicant summaries, get school info too
+      if (collection === 'exam_ai_school_applicant_summaries') {
+        // First get the applicant data
+        const response = await readItems(collection as never, {
+          ...query,
+          limit: 10
+        });
+        items = await this.directus.request(response);
+
+        // Then get school names for each unique school_id
+        const schoolIds = [...new Set(items.map(item => item.school_id))];
+        const schoolsResponse = await readItems('exam_ai_schools' as never, {
+          filter: {
+            id: { _in: schoolIds }
+          }
+        });
+        const schools = await this.directus.request(schoolsResponse);
+
+        // Merge school info into the items
+        items = items.map(item => ({
+          ...item,
+          school_info: schools.find(school => school.id === item.school_id)
+        }));
+      } else {
+        const response = await readItems(collection as never, {
+          ...query,
+          limit: 10
+        });
+        items = await this.directus.request(response);
+      }
+
       console.log('Query result:', items);
       return items;
       
@@ -71,7 +97,6 @@ export class ChatService {
       await this.openai.beta.threads.messages.create(thread.id, {
         role: 'user',
         content: prompt,
-        metadata: { language: "Thai" }
       });
 
       // Run the assistant with database function
@@ -110,6 +135,13 @@ export class ChatService {
                       limit: {
                         type: 'number',
                         description: 'Maximum number of items to return'
+                      },
+                      fields: {
+                        type: 'array',
+                        description: 'Fields to return',
+                        items: {
+                          type: 'string'
+                        }
                       }
                     }
                   }
