@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@directus/sdk':
+        specifier: ^18.0.0
+        version: 18.0.0
       '@langchain/core':
         specifier: ^0.3.18
         version: 0.3.18(openai@4.73.0(zod@3.23.8))
@@ -295,6 +298,10 @@ packages:
   '@cspotcode/source-map-support@0.8.1':
     resolution: {integrity: sha512-IchNf6dN4tHoMFIn/7OE8LWZ19Y6q/67Bmf6vnGREv8RSbBVb9LPJxEcnwrcwX6ixSvaiGoomAUvu4YSxXrVgw==}
     engines: {node: '>=12'}
+
+  '@directus/sdk@18.0.0':
+    resolution: {integrity: sha512-PREPeIKI1/EpvWxZHqWaRgL0HNccaauQm98sABBPMPwH3gCHfSz+sFJyugyx+MYHBiv2K5M8BCxF3MRCbAzljw==}
+    engines: {node: '>=18.0.0'}
 
   '@eslint-community/eslint-utils@4.4.1':
     resolution: {integrity: sha512-s3O3waFUrMV8P/XaF/+ZTp1X9XBZW1a4B97ZnjQF2KYWaFD2A8KyFBsrsfSjEmjn3RGWAIuvlneuZm3CUK3jbA==}
@@ -3105,6 +3112,8 @@ snapshots:
   '@cspotcode/source-map-support@0.8.1':
     dependencies:
       '@jridgewell/trace-mapping': 0.3.9
+
+  '@directus/sdk@18.0.0': {}
 
   '@eslint-community/eslint-utils@4.4.1(eslint@8.57.1)':
     dependencies:
