@@ -16,14 +16,13 @@ export class ChatService {
       const apiKey = this.configService.get<string>('OPENAI_API_KEY');
       const directusUrl = this.configService.get<string>('DIRECTUS_URL');
       const directusToken = this.configService.get<string>('DIRECTUS_TOKEN');
-      this.assistantId = this.configService.get<string>('ASSISTANT_ID');
+      this.assistantId = this.configService.get<string>('ASSISTANT2_ID');
 
       if (!apiKey || !directusUrl || !directusToken || !this.assistantId) {
         throw new Error('Missing required environment variables');
       }
 
       this.openai = new OpenAI({ apiKey });
-      
       this.directus = createDirectus<DirectusSchema>(directusUrl)
         .with(authentication())
         .with(staticToken(directusToken))
@@ -37,47 +36,71 @@ export class ChatService {
 
   private async queryDatabase(
     collection: keyof DirectusSchema,
-    query?: Record<string, any>
+    operation: string = 'select',
+    query?: {
+      filter?: Record<string, any>;
+      sort?: string[];
+      fields?: string[];
+      groupBy?: string[];
+      compare?: {
+        fields: string[];
+        between: string[];
+      };
+    }
   ): Promise<any> {
     try {
-      console.log(`Querying collection: ${collection}`, query);
+      console.log(`Querying collection: ${collection}`, { operation, query });
       
-      let items;
+      const queryParams: any = { limit: 10 };
       
-      // If we're querying applicant summaries, get school info too
-      if (collection === 'exam_ai_school_applicant_summaries') {
-        // First get the applicant data
-        const response = await readItems(collection as never, {
-          ...query,
-          limit: 10
-        });
-        items = await this.directus.request(response);
+      if (query?.filter) {
+        queryParams.filter = query.filter;
+      }
+      if (query?.sort) {
+        queryParams.sort = query.sort;
+      }
+      if (query?.fields) {
+        queryParams.fields = query.fields;
+      }
 
-        // Then get school names for each unique school_id
+      if (collection === 'exam_ai_school_applicant_summaries') {
+        const response = await readItems(collection as never, queryParams);
+        const items = await this.directus.request(response);
+
         const schoolIds = [...new Set(items.map(item => item.school_id))];
         const schoolsResponse = await readItems('exam_ai_schools' as never, {
-          filter: {
-            id: { _in: schoolIds }
-          }
+          filter: { id: { _in: schoolIds } }
         });
         const schools = await this.directus.request(schoolsResponse);
 
-        // Merge school info into the items
-        items = items.map(item => ({
+        const result = items.map(item => ({
           ...item,
           school_info: schools.find(school => school.id === item.school_id)
         }));
-      } else {
-        const response = await readItems(collection as never, {
-          ...query,
-          limit: 10
-        });
-        items = await this.directus.request(response);
+
+        if (operation === 'compare' && query?.compare) {
+          return {
+            type: 'comparison',
+            fields: query.compare.fields,
+            data: result
+          };
+        }
+
+        if (operation === 'aggregate' && query?.groupBy) {
+          // Implement aggregation logic here
+          return {
+            type: 'aggregation',
+            groupBy: query.groupBy,
+            data: result
+          };
+        }
+
+        return result;
       }
 
-      console.log('Query result:', items);
-      return items;
-      
+      const response = await readItems(collection as never, queryParams);
+      return this.directus.request(response);
+
     } catch (error) {
       console.error('Database query error:', error);
       throw new Error(`Failed to query database: ${error.message}`);
@@ -86,89 +109,126 @@ export class ChatService {
 
   async generateResponse(prompt: string): Promise<string> {
     try {
-      console.log('Received prompt:', prompt);
-
-      // Create a thread
       const thread = await this.openai.beta.threads.create();
-      console.log('Created thread:', thread.id);
-
-      // Add the message to thread
       await this.openai.beta.threads.messages.create(thread.id, {
         role: 'user',
         content: prompt,
       });
 
-      // Run the assistant with database function
       const run = await this.openai.beta.threads.runs.create(thread.id, {
         assistant_id: this.assistantId,
-        tools: [
-          {
-            type: 'function',
-            function: {
-              name: 'queryDatabase',
-              description: 'Query the school database collections',
-              parameters: {
-                type: 'object',
-                properties: {
-                  collection: {
-                    type: 'string',
-                    description: 'The collection to query (exam_ai_schools, exam_ai_school_details, or exam_ai_school_applicant_summaries)',
-                    enum: ['exam_ai_schools', 'exam_ai_school_details', 'exam_ai_school_applicant_summaries']
-                  },
-                  query: {
-                    type: 'object',
-                    description: 'Query parameters (filter, sort, etc.)',
-                    properties: {
-                      filter: {
-                        type: 'object',
-                        description: 'Filter conditions'
-                      },
-                      sort: {
-                        type: 'array',
-                        description: 'Sorting instructions',
-                        items: {
-                          type: 'string',
-                          description: 'Field name to sort by'
-                        }
-                      },
-                      limit: {
-                        type: 'number',
-                        description: 'Maximum number of items to return'
-                      },
-                      fields: {
-                        type: 'array',
-                        description: 'Fields to return',
-                        items: {
-                          type: 'string'
+        tools: [{
+          type: 'function',
+          function: {
+            name: 'queryDatabase',
+            description: 'Query the school database with advanced features',
+            parameters: {
+              type: 'object',
+              properties: {
+                collection: {
+                  type: 'string',
+                  enum: ['exam_ai_schools', 'exam_ai_school_details', 'exam_ai_school_applicant_summaries'],
+                  description: 'The database collection to query'
+                },
+                operation: {
+                  type: 'string',
+                  enum: ['select', 'compare', 'aggregate'],
+                  description: 'Type of operation to perform',
+                  default: 'select'
+                },
+                query: {
+                  type: 'object',
+                  properties: {
+                    filter: {
+                      type: 'object',
+                      description: 'Filter conditions',
+                      properties: {
+                        // exam_ai_schools filters
+                        school_id: { type: 'string', description: 'School identifier' },
+                        name: { type: 'string', description: 'School name' },
+                        details: { type: 'string', description: 'School details' },
+                        district: { type: 'string', description: 'School district' },
+                        province: { type: 'string', description: 'School province' },
+        
+                        // exam_ai_school_details filters
+                        type: { type: 'string', description: 'Type of program or examination' },
+                        exam_date: { type: 'string', description: 'Date of examination' },
+                        result_date: { type: 'string', description: 'Result announcement date' },
+                        report_date: { type: 'string', description: 'Reporting date' },
+                        open_application_date: { type: 'string', description: 'Application opening date' },
+                        close_application_date: { type: 'string', description: 'Application closing date' },
+                        orientation_date: { type: 'string', description: 'Orientation date' },
+                        exam_location: { type: 'string', description: 'Exam location' },
+                        display_order: { type: 'number', description: 'Display order' },
+        
+                        // exam_ai_school_applicant_summaries filters
+                        program: { type: 'string', description: 'Program name' },
+                        year: { type: 'number', description: 'Academic year' },
+                        in_district_quota: { type: 'number', description: 'In-district quota' },
+                        out_district_quota: { type: 'number', description: 'Out-of-district quota' },
+                        special_district_quota: { type: 'number', description: 'Special district quota' },
+                        in_district_applicants: { type: 'number', description: 'In-district applicant count' },
+                        out_district_applicants: { type: 'number', description: 'Out-of-district applicant count' },
+                        special_applicants: { type: 'number', description: 'Special applicant count' },
+                        in_district_pass_rate: { type: 'number', description: 'In-district pass rate' },
+                        out_district_pass_rate: { type: 'number', description: 'Out-of-district pass rate' },
+                        special_condition_pass_rate: { type: 'number', description: 'Special condition pass rate' }
+                      }
+                    },
+                    sort: {
+                      type: 'array',
+                      items: { type: 'string' },
+                      description: 'Sorting instructions'
+                    },
+                    fields: {
+                      type: 'array',
+                      items: { type: 'string' },
+                      description: 'Fields to return'
+                    },
+                    groupBy: {
+                      type: 'array',
+                      items: { type: 'string' },
+                      description: 'Fields to group by'
+                    },
+                    compare: {
+                      type: 'object',
+                      properties: {
+                        fields: { 
+                          type: 'array', 
+                          items: { type: 'string' },
+                          description: 'Fields to compare'
+                        },
+                        between: { 
+                          type: 'array', 
+                          items: { type: 'string' },
+                          description: 'Values to compare between'
                         }
                       }
                     }
                   }
-                },
-                required: ['collection']
-              }
+                }
+              },
+              required: ['collection']
             }
           }
-        ]
+        }]
       });
 
-      console.log('Started run:', run.id);
-
-      // Handle the run and potential function calls
       let response = await this.openai.beta.threads.runs.retrieve(thread.id, run.id);
       
       while (response.status === 'in_progress' || response.status === 'requires_action') {
         if (response.status === 'requires_action') {
-          console.log('Function call required');
           const toolCalls = response.required_action?.submit_tool_outputs.tool_calls;
           const toolOutputs = [];
 
           for (const toolCall of toolCalls || []) {
             if (toolCall.function.name === 'queryDatabase') {
               const args = JSON.parse(toolCall.function.arguments);
-              console.log('Function args:', args);
-              const result = await this.queryDatabase(args.collection, args.query);
-              
+              const result = await this.queryDatabase(
+                args.collection,
+                args.operation,
+                args.query
+              );
               toolOutputs.push({
                 tool_call_id: toolCall.id,
                 output: JSON.stringify(result)
@@ -176,7 +236,6 @@ export class ChatService {
             }
           }
 
-          // Submit results back to assistant
           await this.openai.beta.threads.runs.submitToolOutputs(thread.id, run.id, {
             tool_outputs: toolOutputs
           });
@@ -186,18 +245,14 @@ export class ChatService {
         response = await this.openai.beta.threads.runs.retrieve(thread.id, run.id);
       }
 
-      console.log('Run completed with status:', response.status);
-
-      // Get the final response
       const messages = await this.openai.beta.threads.messages.list(thread.id);
       const assistantMessage = messages.data.find(message => message.role === 'assistant');
 
-      if (!assistantMessage || !assistantMessage.content.length) {
+      if (!assistantMessage?.content.length) {
         throw new Error('No response received from assistant');
       }
 
       const content = assistantMessage.content[0];
-      
       if ('text' in content) {
         return content.text.value;
       }
@@ -206,9 +261,7 @@ export class ChatService {
 
     } catch (error) {
       console.error('Error in generateResponse:', error);
-      throw new InternalServerErrorException(
-        error.message || 'Error processing your request'
-      );
+      throw new InternalServerErrorException(error.message || 'Error processing your request');
     }
   }
 }
