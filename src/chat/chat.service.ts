@@ -49,7 +49,7 @@ export class ChatService {
     }
   ): Promise<any> {
     try {
-      console.log(`Querying collection: ${collection}`, { operation, query });
+      console.log('Query params:', JSON.stringify({ collection, operation, query }, null, 2));
       
       const queryParams: any = { limit: 10 };
       
@@ -63,6 +63,32 @@ export class ChatService {
         queryParams.fields = query.fields;
       }
 
+      // Handle queries that need school_details data
+      const detailFields = ['exam_date', 'result_date', 'report_date', 'open_application_date', 'close_application_date', 'orientation_date', 'exam_location'];
+      if (query?.fields?.some(field => detailFields.includes(field))) {
+        const schoolResponse = await readItems('exam_ai_schools' as never, {
+          fields: ['id', 'name']
+        });
+        const schools = await this.directus.request(schoolResponse);
+
+        const detailsResponse = await readItems('exam_ai_school_details' as never, {
+          fields: ['school_id', ...query.fields.filter(f => f !== 'name')]
+        });
+        const details = await this.directus.request(detailsResponse);
+
+        return schools.map(school => {
+          const schoolDetails = details.find(d => d.school_id === school.id);
+          const result: Record<string, any> = { name: school.name };
+          query.fields.forEach(field => {
+            if (field !== 'name') {
+              result[field] = schoolDetails?.[field] || null;
+            }
+          });
+          return result;
+        });
+      }
+
+      // Handle applicant summaries with school info
       if (collection === 'exam_ai_school_applicant_summaries') {
         const response = await readItems(collection as never, queryParams);
         const items = await this.directus.request(response);
@@ -98,12 +124,28 @@ export class ChatService {
         return result;
       }
 
+      // Default single collection query
       const response = await readItems(collection as never, queryParams);
       return this.directus.request(response);
 
     } catch (error) {
       console.error('Database query error:', error);
       throw new Error(`Failed to query database: ${error.message}`);
+    }
+  }
+
+  private formatResponse(data: any): string {
+    try {
+      if (typeof data === 'string') {
+        // Try to parse if it's a JSON string
+        const parsed = JSON.parse(data);
+        return JSON.stringify(parsed, null, 2);
+      }
+      // If it's already an object/array
+      return JSON.stringify(data, null, 2);
+    } catch {
+      // If parsing fails, return original
+      return data;
     }
   }
 
@@ -128,7 +170,7 @@ export class ChatService {
                 collection: {
                   type: 'string',
                   enum: ['exam_ai_schools', 'exam_ai_school_details', 'exam_ai_school_applicant_summaries'],
-                  description: 'The database collection to query'
+                  description: 'Choose collection based on data needed: schools for basic info, school_details for exam/dates, applicant_summaries for statistics'
                 },
                 operation: {
                   type: 'string',
@@ -143,15 +185,12 @@ export class ChatService {
                       type: 'object',
                       description: 'Filter conditions',
                       properties: {
-                        // exam_ai_schools filters
                         school_id: { type: 'string', description: 'School identifier' },
                         name: { type: 'string', description: 'School name' },
                         details: { type: 'string', description: 'School details' },
                         district: { type: 'string', description: 'School district' },
                         province: { type: 'string', description: 'School province' },
-        
-                        // exam_ai_school_details filters
-                        type: { type: 'string', description: 'Type of program or examination' },
+                        type: { type: 'string', description: 'Type of class' },
                         exam_date: { type: 'string', description: 'Date of examination' },
                         result_date: { type: 'string', description: 'Result announcement date' },
                         report_date: { type: 'string', description: 'Reporting date' },
@@ -160,8 +199,6 @@ export class ChatService {
                         orientation_date: { type: 'string', description: 'Orientation date' },
                         exam_location: { type: 'string', description: 'Exam location' },
                         display_order: { type: 'number', description: 'Display order' },
-        
-                        // exam_ai_school_applicant_summaries filters
                         program: { type: 'string', description: 'Program name' },
                         year: { type: 'number', description: 'Academic year' },
                         in_district_quota: { type: 'number', description: 'In-district quota' },
@@ -173,7 +210,7 @@ export class ChatService {
                         in_district_pass_rate: { type: 'number', description: 'In-district pass rate' },
                         out_district_pass_rate: { type: 'number', description: 'Out-of-district pass rate' },
                         special_condition_pass_rate: { type: 'number', description: 'Special condition pass rate' }
-                      }
+                       }
                     },
                     sort: {
                       type: 'array',
@@ -184,26 +221,6 @@ export class ChatService {
                       type: 'array',
                       items: { type: 'string' },
                       description: 'Fields to return'
-                    },
-                    groupBy: {
-                      type: 'array',
-                      items: { type: 'string' },
-                      description: 'Fields to group by'
-                    },
-                    compare: {
-                      type: 'object',
-                      properties: {
-                        fields: { 
-                          type: 'array', 
-                          items: { type: 'string' },
-                          description: 'Fields to compare'
-                        },
-                        between: { 
-                          type: 'array', 
-                          items: { type: 'string' },
-                          description: 'Values to compare between'
-                        }
-                      }
                     }
                   }
                 }
@@ -254,7 +271,7 @@ export class ChatService {
 
       const content = assistantMessage.content[0];
       if ('text' in content) {
-        return content.text.value;
+        return this.formatResponse(content.text.value);
       }
 
       throw new Error('Unexpected response format from assistant');
