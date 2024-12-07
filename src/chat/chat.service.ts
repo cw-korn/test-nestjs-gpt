@@ -49,7 +49,10 @@ export class ChatService {
     }
   ): Promise<any> {
     try {
-      console.log('Query params:', JSON.stringify({ collection, operation, query }, null, 2));
+      console.log('\n=== Query Database Called ===');
+      console.log('Collection:', collection);
+      console.log('Operation:', operation);
+      console.log('Query Object:', JSON.stringify(query, null, 2));
       
       const queryParams: any = { limit: 10 };
       
@@ -63,20 +66,26 @@ export class ChatService {
         queryParams.fields = query.fields;
       }
 
+      console.log('Final Query Parameters:', JSON.stringify(queryParams, null, 2));
+
       // Handle queries that need school_details data
       const detailFields = ['exam_date', 'result_date', 'report_date', 'open_application_date', 'close_application_date', 'orientation_date', 'exam_location'];
       if (query?.fields?.some(field => detailFields.includes(field))) {
+        console.log('\n=== Handling School Details Query ===');
+        
         const schoolResponse = await readItems('exam_ai_schools' as never, {
           fields: ['id', 'name']
         });
         const schools = await this.directus.request(schoolResponse);
+        console.log('Schools Data:', JSON.stringify(schools, null, 2));
 
         const detailsResponse = await readItems('exam_ai_school_details' as never, {
           fields: ['school_id', ...query.fields.filter(f => f !== 'name')]
         });
         const details = await this.directus.request(detailsResponse);
+        console.log('Details Data:', JSON.stringify(details, null, 2));
 
-        return schools.map(school => {
+        const result = schools.map(school => {
           const schoolDetails = details.find(d => d.school_id === school.id);
           const result: Record<string, any> = { name: school.name };
           query.fields.forEach(field => {
@@ -86,18 +95,27 @@ export class ChatService {
           });
           return result;
         });
+
+        console.log('Combined Result:', JSON.stringify(result, null, 2));
+        return result;
       }
 
       // Handle applicant summaries with school info
       if (collection === 'exam_ai_school_applicant_summaries') {
+        console.log('\n=== Handling Applicant Summaries Query ===');
+        
         const response = await readItems(collection as never, queryParams);
         const items = await this.directus.request(response);
+        console.log('Initial Applicant Data:', JSON.stringify(items, null, 2));
 
         const schoolIds = [...new Set(items.map(item => item.school_id))];
+        console.log('School IDs to fetch:', schoolIds);
+
         const schoolsResponse = await readItems('exam_ai_schools' as never, {
           filter: { id: { _in: schoolIds } }
         });
         const schools = await this.directus.request(schoolsResponse);
+        console.log('Schools Data:', JSON.stringify(schools, null, 2));
 
         const result = items.map(item => ({
           ...item,
@@ -105,6 +123,7 @@ export class ChatService {
         }));
 
         if (operation === 'compare' && query?.compare) {
+          console.log('\n=== Processing Comparison Operation ===');
           return {
             type: 'comparison',
             fields: query.compare.fields,
@@ -113,7 +132,7 @@ export class ChatService {
         }
 
         if (operation === 'aggregate' && query?.groupBy) {
-          // Implement aggregation logic here
+          console.log('\n=== Processing Aggregation Operation ===');
           return {
             type: 'aggregation',
             groupBy: query.groupBy,
@@ -121,37 +140,52 @@ export class ChatService {
           };
         }
 
+        console.log('Final Result:', JSON.stringify(result, null, 2));
         return result;
       }
 
       // Default single collection query
+      console.log('\n=== Executing Simple Query ===');
       const response = await readItems(collection as never, queryParams);
-      return this.directus.request(response);
+      const result = await this.directus.request(response);
+      console.log('Query Result:', JSON.stringify(result, null, 2));
+      return result;
 
     } catch (error) {
-      console.error('Database query error:', error);
+      console.error('\n=== Database Query Error ===');
+      console.error('Error details:', error);
       throw new Error(`Failed to query database: ${error.message}`);
     }
   }
 
   private formatResponse(data: any): string {
+    console.log('\n=== Formatting Response ===');
+    console.log('Raw data:', JSON.stringify(data, null, 2));
+    
     try {
       if (typeof data === 'string') {
-        // Try to parse if it's a JSON string
         const parsed = JSON.parse(data);
-        return JSON.stringify(parsed, null, 2);
+        const formatted = JSON.stringify(parsed, null, 2);
+        console.log('Formatted response:', formatted);
+        return formatted;
       }
-      // If it's already an object/array
-      return JSON.stringify(data, null, 2);
-    } catch {
-      // If parsing fails, return original
+      const formatted = JSON.stringify(data, null, 2);
+      console.log('Formatted response:', formatted);
+      return formatted;
+    } catch (error) {
+      console.error('Formatting error:', error);
       return data;
     }
   }
 
   async generateResponse(prompt: string): Promise<string> {
     try {
+      console.log('\n=== Generate Response Started ===');
+      console.log('Received prompt:', prompt);
+
       const thread = await this.openai.beta.threads.create();
+      console.log('Created thread:', thread.id);
+
       await this.openai.beta.threads.messages.create(thread.id, {
         role: 'user',
         content: prompt,
@@ -210,7 +244,7 @@ export class ChatService {
                         in_district_pass_rate: { type: 'number', description: 'In-district pass rate' },
                         out_district_pass_rate: { type: 'number', description: 'Out-of-district pass rate' },
                         special_condition_pass_rate: { type: 'number', description: 'Special condition pass rate' }
-                       }
+                      }
                     },
                     sort: {
                       type: 'array',
@@ -231,15 +265,18 @@ export class ChatService {
         }]
       });
 
+      console.log('Started run:', run.id);
       let response = await this.openai.beta.threads.runs.retrieve(thread.id, run.id);
       
       while (response.status === 'in_progress' || response.status === 'requires_action') {
         if (response.status === 'requires_action') {
+          console.log('\n=== Processing Function Calls ===');
           const toolCalls = response.required_action?.submit_tool_outputs.tool_calls;
           const toolOutputs = [];
 
           for (const toolCall of toolCalls || []) {
             if (toolCall.function.name === 'queryDatabase') {
+              console.log('Function call arguments:', toolCall.function.arguments);
               const args = JSON.parse(toolCall.function.arguments);
               const result = await this.queryDatabase(
                 args.collection,
@@ -260,8 +297,10 @@ export class ChatService {
 
         await new Promise(resolve => setTimeout(resolve, 1000));
         response = await this.openai.beta.threads.runs.retrieve(thread.id, run.id);
+        console.log('Run status:', response.status);
       }
 
+      console.log('\n=== Getting Final Response ===');
       const messages = await this.openai.beta.threads.messages.list(thread.id);
       const assistantMessage = messages.data.find(message => message.role === 'assistant');
 
@@ -277,7 +316,8 @@ export class ChatService {
       throw new Error('Unexpected response format from assistant');
 
     } catch (error) {
-      console.error('Error in generateResponse:', error);
+      console.error('\n=== Error in Generate Response ===');
+      console.error('Error details:', error);
       throw new InternalServerErrorException(error.message || 'Error processing your request');
     }
   }
