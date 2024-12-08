@@ -42,6 +42,7 @@ export class ChatService {
   ): Promise<any> {
     try {
       console.log(`Querying collection: ${collection}`, query);
+      console.log('Query object:', query);
       
       let items;
       
@@ -76,7 +77,7 @@ export class ChatService {
         items = await this.directus.request(response);
       }
 
-      console.log('Query result:', items);
+      // console.log('Query result:', items);
       return items;
       
     } catch (error) {
