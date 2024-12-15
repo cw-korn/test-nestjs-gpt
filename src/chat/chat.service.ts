@@ -23,7 +23,7 @@ export class ChatService {
       }
 
       this.openai = new OpenAI({ apiKey });
-      
+
       this.directus = createDirectus<DirectusSchema>(directusUrl)
         .with(authentication())
         .with(staticToken(directusToken))
@@ -37,7 +37,7 @@ export class ChatService {
 
   private constructSqlQuery(collection: string, query?: Record<string, any>): string {
     let sqlQuery = `SELECT * FROM ${collection}`;
-    
+
     if (query?.filter) {
       sqlQuery += '\nWHERE ' + JSON.stringify(query.filter, null, 2);
     }
@@ -53,7 +53,7 @@ export class ChatService {
     if (query?.limit) {
       sqlQuery += '\nLIMIT ' + query.limit;
     }
-    
+
     return sqlQuery;
   }
 
@@ -67,47 +67,70 @@ export class ChatService {
       console.log('Query parameters:', JSON.stringify(query, null, 2));
       console.log('\n=== Equivalent SQL Query ===');
       console.log(this.constructSqlQuery(collection, query));
-      
-      let items;
-      
-      if (collection === 'exam_ai_school_applicant_summaries') {
-        // Get applicant data
-        const response = await readItems(collection as never, {
-          ...query,
-          limit: 10
-        });
-        items = await this.directus.request(response);
+      // Transform the query to use proper Directus filter syntax
+      const transformedQuery: Record<string, any> = {
+        limit: 10
+      };
 
-        // Get school names
-        const schoolIds = [...new Set(items.map(item => item.school_id))];
-        const schoolsResponse = await readItems('exam_ai_schools' as never, {
-          filter: {
-            id: { _in: schoolIds }
+      if (query) {
+        // Handle any direct key-value pairs as equality filters
+        const filter = {};
+        // Handle any direct key-value pairs as contains filters for string values
+        Object.entries(query).forEach(([key, value]) => {
+          if (!['filter', 'sort', 'limit', 'fields'].includes(key)) {
+            // Use _contains for strings, _eq for other types
+            filter[key] = typeof value === 'string'
+              ? { _contains: value }
+              : { _eq: value };
           }
         });
-        const schools = await this.directus.request(schoolsResponse);
 
-        items = items.map(item => ({
-          ...item,
-          school_info: schools.find(school => school.id === item.school_id)
-        }));
+        // Merge with any existing filter in the query
+        if (Object.keys(filter).length > 0 || query.filter) {
+          transformedQuery.filter = {
+            ...filter,
+            ...query.filter
+          };
+        }
 
-        console.log('\n=== Join Query for Schools ===');
-        console.log(`SELECT * FROM exam_ai_schools WHERE id IN (${schoolIds.join(', ')})`);
-      } else {
-        const response = await readItems(collection as never, {
-          ...query,
-          limit: 10
-        });
-        items = await this.directus.request(response);
+        // Pass through other valid query parameters
+        if (query.sort) transformedQuery.sort = query.sort;
+        if (query.limit) transformedQuery.limit = query.limit;
+        if (query.fields) transformedQuery.fields = query.fields;
       }
 
+      console.log('Transformed query:', JSON.stringify(transformedQuery, null, 2));
+
+      let items;
+
+      if (collection === 'exam_ai_school_applicant_summaries') {
+        const response = await readItems(collection as never, transformedQuery);
+        items = await this.directus.request(response);
+
+        if (items.length > 0) {
+          const schoolIds = [...new Set(items.map(item => item.school_id))];
+          const schoolsResponse = await readItems('exam_ai_schools' as never, {
+            filter: {
+              id: { _in: schoolIds }
+            }
+          });
+          const schools = await this.directus.request(schoolsResponse);
+
+          items = items.map(item => ({
+            ...item,
+            school_info: schools.find(school => school.id === item.school_id)
+          }));
+        }
+
+      } else {
+        const response = await readItems(collection as never, transformedQuery);
+        items = await this.directus.request(response);
+      }
       console.log('\n=== Query Results ===');
       console.log('Number of results:', Array.isArray(items) ? items.length : 1);
       console.log('First result sample:', JSON.stringify(items[0], null, 2));
-      
       return items;
-      
+
     } catch (error) {
       console.error('Database query error:', error);
       throw new Error(`Failed to query database: ${error.message}`);
@@ -135,45 +158,50 @@ export class ChatService {
             type: 'function',
             function: {
               name: 'queryDatabase',
-              description: 'Query the school database collections',
+              description: 'Query the school database collections. IMPORTANT: For school details and summaries, you must first query exam_ai_schools to get the correct school_id.',
               parameters: {
                 type: 'object',
                 properties: {
                   collection: {
                     type: 'string',
-                    description: 'The collection to query (exam_ai_schools, exam_ai_school_details, or exam_ai_school_applicant_summaries)',
+                    description: 'The collection to query. Start with exam_ai_schools to get school_id before querying other collections.',
                     enum: ['exam_ai_schools', 'exam_ai_school_details', 'exam_ai_school_applicant_summaries']
                   },
                   query: {
                     type: 'object',
-                    description: 'Query parameters (filter, sort, etc.)',
+                    description: 'Query parameters. For school details and summaries, school_id is required and must be obtained from exam_ai_schools first.',
+                    required: ['filter'],
                     properties: {
                       filter: {
                         type: 'object',
-                        description: 'Filter conditions'
+                        description: 'Filter conditions. For exam_ai_school_details and exam_ai_school_applicant_summaries, must include id from a previous exam_ai_schools query.',
+                        properties: {
+                          name: {
+                            type: 'string',
+                            description: 'Full school name (only for exam_ai_schools collection)'
+                          },
+                          school_id: {
+                            type: 'number',
+                            description: 'Required for exam_ai_school_details and exam_ai_school_applicant_summaries. Must be obtained from exam_ai_schools first.'
+                          },
+                          year: {
+                            type: 'number',
+                            description: 'Academic year (for exam_ai_school_applicant_summaries)'
+                          }
+                        }
                       },
                       sort: {
                         type: 'array',
-                        description: 'Sorting instructions',
-                        items: {
-                          type: 'string'
-                        }
+                        items: { type: 'string' }
                       },
                       limit: {
                         type: 'number',
-                        description: 'Maximum number of items to return'
-                      },
-                      fields: {
-                        type: 'array',
-                        description: 'Fields to return',
-                        items: {
-                          type: 'string'
-                        }
+                        default: 10
                       }
                     }
                   }
                 },
-                required: ['collection']
+                required: ['collection', 'query']
               }
             }
           }
@@ -184,13 +212,13 @@ export class ChatService {
       console.log('Run ID:', run.id);
 
       let response = await this.openai.beta.threads.runs.retrieve(thread.id, run.id);
-      
+
       while (response.status === 'in_progress' || response.status === 'requires_action') {
         if (response.status === 'requires_action') {
           console.log('\n=== Tool Calls from Assistant ===');
           const toolCalls = response.required_action?.submit_tool_outputs.tool_calls;
           console.log(JSON.stringify(toolCalls, null, 2));
-          
+
           const toolOutputs = [];
 
           for (const toolCall of toolCalls || []) {
@@ -199,9 +227,9 @@ export class ChatService {
               console.log('\n=== Processing Tool Call ===');
               console.log('Function:', toolCall.function.name);
               console.log('Arguments:', JSON.stringify(args, null, 2));
-              
+
               const result = await this.queryDatabase(args.collection, args.query);
-              
+
               toolOutputs.push({
                 tool_call_id: toolCall.id,
                 output: JSON.stringify(result)
@@ -212,7 +240,7 @@ export class ChatService {
           console.log('\n=== Submitting Tool Outputs ===');
           console.log('Number of outputs:', toolOutputs.length);
           console.log('Tool outputs being submitted:', JSON.stringify(toolOutputs, null, 2));
-          
+
           await this.openai.beta.threads.runs.submitToolOutputs(thread.id, run.id, {
             tool_outputs: toolOutputs
           });
@@ -232,7 +260,7 @@ export class ChatService {
       }
 
       const content = assistantMessage.content[0];
-      
+
       if ('text' in content) {
         console.log('\n=== Final Response ===');
         console.log('Assistant response:', content.text.value);
