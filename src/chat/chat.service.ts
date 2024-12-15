@@ -10,6 +10,7 @@ export class ChatService {
   private openai: OpenAI;
   private directus: RestClient<DirectusSchema>;
   private readonly assistantId: string;
+  schools: any;
 
   constructor(private configService: ConfigService) {
     try {
@@ -67,46 +68,65 @@ export class ChatService {
       console.log('Query parameters:', JSON.stringify(query, null, 2));
       console.log('\n=== Equivalent SQL Query ===');
       console.log(this.constructSqlQuery(collection, query));
+  
       // Transform the query to use proper Directus filter syntax
       const transformedQuery: Record<string, any> = {
         limit: 10
       };
-
+  
       if (query) {
         // Handle any direct key-value pairs as equality filters
         const filter = {};
-        // Handle any direct key-value pairs as contains filters for string values
+        
+        // Handle any direct key-value pairs with special handling for relationships
         Object.entries(query).forEach(([key, value]) => {
           if (!['filter', 'sort', 'limit', 'fields'].includes(key)) {
-            // Use _contains for strings, _eq for other types
-            filter[key] = typeof value === 'string'
-              ? { _contains: value }
-              : { _eq: value };
+            if (key === 'school_id' && collection !== 'exam_ai_schools') {
+              // For related collections, we need the numeric id from the schools table
+              const schoolId = typeof value === 'string' && value.includes('-') 
+                ? this.getSchoolNumericId(value)  // This would be a UUID
+                : value;  // This would be already numeric
+              filter[key] = { _eq: schoolId };
+            } else {
+              // Use _contains for strings, _eq for other types
+              filter[key] = typeof value === 'string'
+                ? { _contains: value }
+                : { _eq: value };
+            }
           }
         });
-
+  
         // Merge with any existing filter in the query
         if (Object.keys(filter).length > 0 || query.filter) {
+          // Handle school_id in filter object for related collections
+          if (query.filter?.school_id && collection !== 'exam_ai_schools') {
+            const value = query.filter.school_id._eq || query.filter.school_id;
+            const schoolId = typeof value === 'string' && value.includes('-')
+              ? this.getSchoolNumericId(value)
+              : value;
+            query.filter.school_id = { _eq: schoolId };
+          }
+          
           transformedQuery.filter = {
             ...filter,
             ...query.filter
           };
         }
-
+  
         // Pass through other valid query parameters
         if (query.sort) transformedQuery.sort = query.sort;
         if (query.limit) transformedQuery.limit = query.limit;
         if (query.fields) transformedQuery.fields = query.fields;
       }
-
+  
       console.log('Transformed query:', JSON.stringify(transformedQuery, null, 2));
-
+  
       let items;
-
+  
       if (collection === 'exam_ai_school_applicant_summaries') {
         const response = await readItems(collection as never, transformedQuery);
         items = await this.directus.request(response);
-
+  
         if (items.length > 0) {
           const schoolIds = [...new Set(items.map(item => item.school_id))];
           const schoolsResponse = await readItems('exam_ai_schools' as never, {
@@ -115,26 +135,39 @@ export class ChatService {
             }
           });
           const schools = await this.directus.request(schoolsResponse);
-
+  
           items = items.map(item => ({
             ...item,
             school_info: schools.find(school => school.id === item.school_id)
           }));
         }
-
       } else {
         const response = await readItems(collection as never, transformedQuery);
         items = await this.directus.request(response);
       }
+  
       console.log('\n=== Query Results ===');
       console.log('Number of results:', Array.isArray(items) ? items.length : 1);
       console.log('First result sample:', JSON.stringify(items[0], null, 2));
       return items;
-
+  
     } catch (error) {
       console.error('Database query error:', error);
       throw new Error(`Failed to query database: ${error.message}`);
     }
+  }
+  
+  // Helper method to get the numeric ID for a school
+  private getSchoolNumericId(uuid: string): number {
+    // If we already have the mapping from the previous schools query
+    const schoolDetails = this.schools?.find(school => school.school_id === uuid);
+    if (schoolDetails) {
+      return schoolDetails.id;
+    }
+    
+    // If not found, return a numeric value that won't match anything
+    // This is safer than throwing an error as the query will just return no results
+    return -1;
   }
 
   async generateResponse(prompt: string): Promise<string> {
@@ -158,31 +191,31 @@ export class ChatService {
             type: 'function',
             function: {
               name: 'queryDatabase',
-              description: 'Query the school database collections. IMPORTANT: For school details and summaries, you must first query exam_ai_schools to get the correct school_id.',
+              description: 'Query the school database collections. Details and summaries collections reference the numeric id from exam_ai_schools.',
               parameters: {
                 type: 'object',
                 properties: {
                   collection: {
                     type: 'string',
-                    description: 'The collection to query. Start with exam_ai_schools to get school_id before querying other collections.',
+                    description: 'The collection to query. Start with exam_ai_schools to get the school info before querying other collections.',
                     enum: ['exam_ai_schools', 'exam_ai_school_details', 'exam_ai_school_applicant_summaries']
                   },
                   query: {
                     type: 'object',
-                    description: 'Query parameters. For school details and summaries, school_id is required and must be obtained from exam_ai_schools first.',
+                    description: 'Query parameters. For school details and summaries, use the numeric id from exam_ai_schools collection.',
                     required: ['filter'],
                     properties: {
                       filter: {
                         type: 'object',
-                        description: 'Filter conditions. For exam_ai_school_details and exam_ai_school_applicant_summaries, must include id from a previous exam_ai_schools query.',
+                        description: 'Filter conditions. For exam_ai_school_details and exam_ai_school_applicant_summaries, use the numeric id from exam_ai_schools.',
                         properties: {
                           name: {
                             type: 'string',
-                            description: 'Full school name (only for exam_ai_schools collection)'
+                            description: 'School name (only for exam_ai_schools collection)'
                           },
                           school_id: {
                             type: 'number',
-                            description: 'Required for exam_ai_school_details and exam_ai_school_applicant_summaries. Must be obtained from exam_ai_schools first.'
+                            description: 'Numeric id from exam_ai_schools.id field for exam_ai_school_details and exam_ai_school_applicant_summaries.'
                           },
                           year: {
                             type: 'number',
